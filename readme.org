@@ -1,0 +1,478 @@
+#+SETUPFILE: ~/org-themes/src/solarized_dark/solarized_dark.theme
+* Intro
+如果对于一些结构不清楚, 可以用dir(st)查看st有那些成员方法
+* Basics
+
+*Get ea*
+#+BEGIN_SRC python
+ea = idc.ScreenEA()
+ea = here()
+hex(MinEA()) 
+hex(MaxEA())
+#+END_SRC
+
+*Invalid Addr*
+#+BEGIN_SRC python
+idaapi.BADADDR
+if BADADDR != here(): print "valid address"
+#+END_SRC
+
+*What can we get from ea* 
+#+BEGIN_SRC python
+idc.SegName(ea) 
+idc.GetDisasm(ea) 
+idc.GetMnem(ea) 
+idc.Getopnd(ea, 0)
+idc.Getopnd(ea, 1)
+#+END_SRC
+
+* Segments
+
+#+BEGIN_SRC python
+  for seg in idautils.Segments():
+      print idc.SegName(seg), idc.SegStart(seg), idc.SegEnd(seg)
+#+END_SRC
+
+* Functions
+
+eg: 获取所有函数地址和函数名
+#+BEGIN_SRC python
+  for func in idautils.Functions():
+      print hex(func), idc.GetFunctionName(func)
+#+END_SRC
+
+eg: 获取当前函数的开始和结束地址
+#+BEGIN_SRC python
+  func = idaapi.get_func(ea) # the value of ea only needs to be an address within the boundaries of the analyzed function
+  type(func) #=> <class 'idaapi.func_t'>
+  print "Start: 0x5x, End: 0x%x" % (func.startEA, func.endEA)
+#+END_SRC
+
+eg: 打印当前函数的disasm
+#+BEGIN_SRC python
+  ea = here()
+  start = idc.GetFunctionAttr(ea, FUNCATTR_START)
+  end = idc.GetFunctionAttr(ea, FUNCATTR_END)
+  cur_addr = start
+  while cur_addr <= end:
+      print hex(cur_addr), idc.GetDisasm(cur_addr)
+      cur_addr = idc.NextHead(cur_addr, end)
+#+END_SRC
+
+eg: 打印函数的flag
+#+BEGIN_SRC python
+  import idautils
+  for func in idautils.Functions():
+      flags = idc.GetFunctionsFlags(func)
+      # 明确if和elif的区别, if的话,是选择多个block进行执行, elif只会选择一个block执行
+      if flags & FUNC_NORET:
+	  print hex(func), "FUNC_NORET" # function that does not execute a return instruction
+      if flags & FUNC_FAR: 
+	  print hex(func), "FUNC_FAR" # rarely seen unless reversing software that uses segmented memory
+      if flags & FUNC_USERFAR:
+	  print hex(func), "FUNC_USERRFAR" # rarely seen
+      if flags & FUNC_LIB:
+	  print hex(func), "FUNC_LIB" # library function
+      if flags & FUNC_STATIC:
+	  print hex(func), "FUNC_STATIC" # static function
+      if flags & FUNC_FRAME:
+	  print hex(func), "FUNC_FRAME" # this function uses a frame pointer ebp
+      if flags & FUNC_BOTTOMBP:
+	  print hex(func), "FUNC_BOTTOMBP" # identify functions that frame pointers is equal to the stack pointer
+      if flags & FUNC_HIDDEN:
+	  print hex(func), "FUNC_HIDDEN"
+      if flags & FUNC_THUNK: 
+	  print hex(func), "FUNC_THUNK" # thunk functions, they are simple functions that jump to another function
+        
+#+END_SRC
+
+* Instructions
+
+eg: 打印当前函数的所有指令
+#+BEGIN_SRC python
+disasm_addr = list(idautils.FuncItems(here()))
+for line in disasm_addr: print hex(addr), idc.GetDisasm(line)
+#+END_SRC
+
+
+eg: 寻找动态调用指令
+#+BEGIN_SRC python
+  for func in idautils.Functions():
+      flags = idc.GetFunctionFlags(func)
+      if flags & FUNC_LIB or flags & FUNC_THUNK:
+	  continue
+      disasm_addr = list(idautils.FuncItems(func))
+      for line in disasm_addr:
+	  m = idc.GetMnem(line)
+	  if m == 'call' or m == 'jmp':
+	      op = idc.GetOpType(line, 0)
+	      if op == o_reg:
+		  print "0x%x %s" % (line, idc.GetDisasm(line))
+
+#+END_SRC
+
+eg: NextHead, PrevHead, NextAddr, PrevAddr
+#+BEGIN_SRC python
+  ea = here()
+  print hex(ea), idc.GetDisasm(ea)
+  next_instr = idc.NextHead(ea)
+  print hex(next_instr), idc.GetDisasm(next_instr)
+  prev_instr = idc.PrevHead(ea)
+  print hex(prev_instr), idc.GetDisasm(prev_instr)
+  print hex(idc.NextAddr(ea))
+  print hex(idc.PrevAddr(ea))
+#+END_SRC
+
+* Operands
+
+There are eight different types of operand types.
+
+o_void (0): if an instruction does not have any operand
+> retn
+
+o_reg (1)
+> pop edi
+
+o_mem (2) 
+> cmp ds:dword_A152B8, 0
+
+o_phrase(3): This operand is returned if the operand consists of a base register and/or a index register
+> mov [edi+ecx], eax
+
+o_displ(4): This operand is returned if the operand consists of register and displacement value.
+> mov eax, [edi+18h]
+
+o_imm(5): immediate
+> add esp, 0Ch
+
+o_far(6): not very common, It is used to find operands that are accessing immediate far addresses
+
+o_near(7): not very common, It is used to find operands that are accessing immediate near addresses
+
+#+BEGIN_SRC python
+print hex(ea), idc.GetDisasm(ea)
+print idc.GetOpType(ea, 0) 
+#+END_SRC
+
+
+eg: 将直接数访存变成偏移访存
+#+BEGIN_SRC python
+  min = MinEA()
+  max = MinEA()
+
+  for func in idautils.Functions():
+      flags = idc.GetFunctionFlags(func)
+      if flags & FUNC_LIB or flags & FUNC_THUNK:
+	  continue
+      disasm_addr = list(idautils.FuncItems(func))
+      for curr_addr in disasm_addr:
+	  if idc.GetOpType(curr_addr, 0) == 5 and (min < idc.GetOperandValu(curr_addr, 0) < max):
+	      idc.OpOff(curr_addr, 0, 0)
+	  if idc.GetOpType(curr_addr, 1) == 5 and (min < idc.GetOperandValue(curr_addr, 0) < max):
+	      idc.OpOff(curr_addr, 1, 0)
+            
+#+END_SRC
+
+* Xrefs
+
+eg: 查看调用WriteFile的所有的地址
+
+CodeRefsTo: 有那些地方指向我
+#+BEGIN_SRC python
+  wf_addr = idc.LocByName("WriteFile")
+  print hex(wf_addr), idc.GetDisasm(wf_addr) #=> 0x1000e1b8 extrn WriteFile dword
+  for addr in idautils.CodeRefsTo(wf_addr, 0):
+      print hex(addr), idc.GetDisasm(addr), idc.GetFunctionName(addr)
+#+END_SRC
+
+eg: 查看所有命名函数
+#+BEGIN_SRC python
+  [x for x in Names()]
+#+END_SRC
+
+CodeRefsFrom: 我指向哪个地方
+#+BEGIN_SRC python
+  ea = 0x10004932
+  print hex(ea), idc.GetDisasm(ea) #=> 0x10004932 call ds:WriteFile
+  for addr in idautils.CodeRefsFrom(ea, 0):
+      print hex(addr), idc.GetDisasm(addr) #=> 0x1000e1b8 extrn WriteFile:dword
+#+END_SRC
+
+
+eg: 数据CrossRefsTo
+#+BEGIN_SRC python
+print hex(ea), idc.GetDisasm(ea) #=> 0x1000e3ec db 'vnc32', 0
+for addr in idautils.DataRefsTo(ea): print hex(addr), idc.GetDisasm(addr) #=> 0x100038ac push offset aVnc32; "vnc32"
+#+END_SRC
+
+eg: 数据CrossRefsFrom
+#+BEGIN_SRC python
+print hex(ea), idc.GetDisasm(ea) # push offset aVnc32
+for add in idautils.DataRefsFrom(ea): print hex(addr), idc.GetDisasm(addr) #=> db 'vnc32', 0
+#+END_SRC
+
+eg: XrefsTo
+#+BEGIN_SRC python
+  print hex(ea), idc.GetDisasm(ea) # unicode 0, <Path>, 0
+  for xref in idautils.XrefsTo(ea, 1):
+      print xref.type, idautils.XrefTypeName(xref.type), hex(xref.frm), hex(xref.to), xref.iscode
+#+END_SRC
+
+* Search
+
+| FindBinary(ea, flag, searchstr, radix=16) |                                                                                               |
+| FindText(ea, flag, y, x, searchstr)       | y is the number of lines at ea to search from and x is the coordinate in the line             |
+| FindCode(ea, flag)                        |                                                                                               |
+| FindData(ea, flag)                        |                                                                                               |
+| FindUnexplored(ea, flag)                  | This function is used to find the address of bytes that IDA did not identify as code or data. |
+| FindExplored(ea, flag)                    | This function is used to find an address that IDA identified as code or data                  |
+| FindImmediate(ea, flag, value)            |                                                                                               |
+
+eg: 寻找二进制模式串
+#+BEGIN_SRC python
+  pattern = '55 8B EC'
+  addr = MinEA()
+  for x in range(0, 5):
+      addr = idc.FindBinary(addr, SEARCH_DOWN, pattern)
+      if addr != idc.BADADDR:
+	  print hex(addr), idc.GetDisasm(addr)        
+#+END_SRC
+
+eg: 寻找字符串
+#+BEGIN_SRC python
+  cur_addr = MinEA()
+  end = MaxEA()
+  while cur_addr < end:
+      cur_addr = idc.FindText(cur_addr, SEARCH_DOWN, 0, 0, "ACCEPT")
+      if cur_addr == idc.BADADDR:
+	  break
+      else:
+	  print hex(cur_addr), idc.GetDisasm(cur_addr)
+      cur_addr = idc.NextHead(cur_addr)    
+#+END_SRC
+
+
+
+eg: 类型推断
+
+| idc.isCode    | Returns True if IDA has marked the address as code    |
+| idc.isData    | Returns True if IDA has marked the address as data    |
+| idc.isTail    | Returns True if IDA has marked the address as tail    |
+| idc.isUnkonwn | Returns True if IDA has marked the address as unknown |
+| idc.isHead    | Returns True if IDA has marked the address as head    |
+
+#+BEGIN_SRC python
+  print hex(ea), idc.GetDisasm(ea) #=> 0x10001000 push ebp
+  idc.isCode(idc.GetFlags(ea)) #=> True
+#+END_SRC 
+
+#+BEGIN_SRC python
+print hex(ea), idc.GetDisasm(ea) 
+addr = idc.FindData(ea, SEARCH_UP|SEARCH_NEXT)
+print hex(addr), idc.GetDisasm(addr) 
+#+END_SRC
+* Selecting Data
+  
+| idc.SelStart() |当前选中区域的start |
+| idc.SelEnd()   | 当前选中区域的end, 注意end不是选中区域的最后一个address, 而是该区域外下一个address    |
+
+#+BEGIN_SRC python
+start = idc.SelStart()
+hex(start)
+end = idc.SelEnd()
+hex(end)
+#+END_SRC
+
+* Comment & Renaming 
+
+| idc.MakeComm(ea, comment)               |                                                                              |
+| idc.MakeRptCmt(ea, comment)             |                                                                              |
+| idc.GetCommentEx(ea, repeatable)        |                                                                              |
+| idc.SetFunctionCmt(ea, cmt, repeatable) |                                                                              |
+| idc.GetFunctionCmt(ea, repeatable)      | repeatable = True 的话, 每次调用该函数, 都会显示comment                      |
+| idc.MakeName(ea, name)                  | To rename a function, ea needs to be the first address of the function       |
+| idc.MakeName(ea, name, flag)            | flag=SN_NOWARN to avoid dialogue in case the function name is already in use |
+
+
+
+eg: 下述例子会将所有xor x, y (x==y) 标记为al = 0
+#+BEGIN_SRC python
+  for func in idautils.Functions():
+      flags = idc.GetFunctionFlags(func)
+      if flags & FUNC_LIB or flags & FUNC_THUNK:
+	  continue
+      dism_addr = list(idautils.FuncItems(func))
+      for ea in dism_addr:
+	  if idc.GetMnem(ea) == "xor":
+	      if idc.GetOpnd(ea, 0) == idc.GetOpnd(ea, 1)
+	      comment = "%s = 0" % (idc.GetOpnd(ea, 0))
+	      idc.MakeComm(ea, comment)
+#+END_SRC
+
+* Accessing Raw Data
+
+| idc.Byte(ea)                              |   |   |
+| idc.Word(ea)                              |   |   |
+| idc.Dword(ea)                             |   |   |
+| idc.Qword(ea)                             |   |   |
+| idc.GetFloat(ea)                          |   |   |
+| idc.GetDouble(ea)                         |   |   |
+| idc.GetManyBytes(ea, size, use_dbg=False) |   |   |
+
+* Patching 
+
+The size of the value needs to match the size specified by the function name we choose
+
+| idc.PatchByte(ea, value)  |   |
+| idc.PatchWord(ea, value)  |   |
+| idc.PatchDword(ea, value) |   |
+
+* Input & Output
+
+| AskFile(forsave, mask, prompt) | forsave can be a value of 0 if want to open a dialog box or 1 if we want to open the save dialog box. mask is the file extension or pattern. prompt is the title of the window |
+
+#+BEGIN_SRC python
+  import sys
+  import idaapi
+
+  class IO_DATA():
+      def __init__(self):
+	  self.start = SelStart()
+	  self.end = Sel.End()
+	  self.buffer = ''
+	  self.ogLen = None
+	  self.status = True
+	  self.run()
+
+      def checkBounds(self):
+	  if self.start is BADADDR or self.end is BADADDR:
+	      self.status = False
+
+      def getData(self):
+	  '''get data between start and end, put them into object.buffer'''
+	  self.ogLen = self.end - self.start
+	  self.buffer = ''
+	  try:
+	      for byte in idc.GetManyBytes(self.start, self.ogLen):
+		  self.buffer = self.buffer + byte
+	  except:
+	      self.status = False
+	  return
+
+      def run(self):
+	  '''basically main'''
+	  self.checkBounds()
+	  if self.status == False:
+	      sys.stdout.write('ERROR: Please select valid data\n')
+	  self.getData()
+
+      def patch(self, temp=None):
+	  '''patch idb with data in object.buffer'''
+	  if temp != None:
+	      self.buffer = temp
+	      for index, byte in enumerate(self.buffer):
+		  idc.PatchByte(self.start+index, ord(byte))
+
+      def importb(self):
+	  '''import file to save to buffer'''
+	  fileName = idc.AskFile(0, "*.*", 'Import File')
+	  try:
+	      self.buffer = open(filename, 'rb').read()
+	  except:
+	      sys.stdout.write('ERROR: Cannot access file')
+
+      def export(self):
+	  '''save the selected buffer to a file'''
+	  exportFile = idc.AskFile(1, "*.*", 'Export Buffer')
+	  f = open(exportFile, 'wb')
+	  f.write(self.buffer)
+	  f.close()
+
+      def stats(self):
+	  print "start: %s" % hex(self.start)
+	  print "end: %s" % hex(self.end)
+	  print "len: %s" % hex(len(self.buffer))
+#+END_SRC
+
+* Intel Pin Logger
+
+eg: itrace.out中保存了动态执行中执行过的地址, 下面的代码将这些地址标记出来, 并标记出访问次数
+#+BEGIN_SRC python
+  f = open('itrace.out', 'r')
+  lines = f.readlines()
+
+  for y in lines:
+      y = int(y, 16)
+      idc.SetColor(y, CIC_ITEM, 0xfffff)
+      com = idc.GetCommentEx(y, 0)
+      if com == None or 'count' not in com:
+	  idc.MakeComm(y, 'count:1')
+      else:
+	  try:
+	      count = int(com.split(':')[1], 16)
+	  except:
+	      print hex(y)
+	  tmp = "count:0x%x" % (count + 1)
+	  idc.MakeComm(y, tmp)        
+  f.close()
+#+END_SRC
+
+* Batch File Generation 
+
+Sometimes it can be useful to create IDBs or ASMs for all the files in a directory. This can help save time when analyzing a set of samples that 
+are part of the same family of malware.
+
+eg: 下面的代码会为当前文件夹下所有文件生成asm和idb文件
+#+BEGIN_SRC python
+  import os
+  import subprocess
+  import glob
+
+  paths = glob.glob("*") # to get all files in the directory
+  ida_path = os.path.join(os.environ['PROGRAMFILES'], "IDA", "idaw.exe")
+
+  for file_path in paths:
+      if file_path.endswith(".py"):
+	  continue
+      subprocess.call([ida_path, "-B", file_path])
+#+END_SRC
+
+* Executing Scripts 
+
+IDAPython scripts can be executed from the command line. 
+
+| idaapi.autoWait() | wait the analysis to complete           |
+| idc.Exit()        | This will stop execution of our scripts |   
+
+eg: 下面的代码打印当前文件中指令个数
+#+BEGIN_SRC python
+  import idc
+  import idaapi
+  import idautils
+
+  idaapi.autoWait()
+
+  count = 0
+  for func in idautils.Functions():
+      # Ignore library Code
+      flags = idc.GetFunctionFlags(func)
+      if flags & FUNC_LIB:
+	  continue
+      for instru in idautils.FuncItems(func):
+	  count  += 1
+      f = open("instru_count.txt", 'w')
+      print_me = "Instruction Count is %d" % (count)
+      f.write(print_me)
+      f.close()
+
+      idc.Exit(0)
+#+END_SRC
+
+eg: 下面的代码展示了如何执行脚本
+注意, 下面的代码是对idb进行分析, 当有很多样本, 并且会执行多种分析时, 推荐先生成对应的idb文件, 然后可以直接对idb文件分析
+
+#+BEGIN_SRC shell
+"C:\Program Files (x86)\IDA 6.3\idaw.exe" -A -Scount.py cur-analysis.idb
+#+END_SRC
+
+
